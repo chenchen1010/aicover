@@ -1,7 +1,9 @@
+
 export interface TextLayout {
   main_text: string;
   sub_text: string;
   design_note: string;
+  tags: string; // New field for SEO tags
 }
 
 export interface StrategyRecommendation {
@@ -15,6 +17,7 @@ export interface CoverResult extends StrategyRecommendation {
   generatedImage?: string; // Base64 string
   isGeneratingImage: boolean;
   imageError?: string;
+  finalPrompt?: string; // The actual full prompt used for generation (editable)
 }
 
 // Global augmentation for AI Studio key selection

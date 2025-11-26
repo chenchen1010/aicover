@@ -1,3 +1,4 @@
+
 import { GoogleGenAI, Type } from "@google/genai";
 import { SYSTEM_PROMPT } from "../constants";
 import { StrategyRecommendation } from "../types";
@@ -40,8 +41,9 @@ export const generateStrategies = async (topic: string): Promise<StrategyRecomme
                 main_text: { type: Type.STRING },
                 sub_text: { type: Type.STRING },
                 design_note: { type: Type.STRING },
+                tags: { type: Type.STRING },
               },
-              required: ["main_text", "sub_text", "design_note"],
+              required: ["main_text", "sub_text", "design_note", "tags"],
             },
           },
           required: ["style_recommendation", "reasoning", "gemini_image_prompt", "text_layout_guide"],
@@ -66,23 +68,40 @@ export const generateStrategies = async (topic: string): Promise<StrategyRecomme
   }
 };
 
+interface ReferenceImage {
+  data: string; // Base64 string (raw, no prefix)
+  mimeType: string;
+}
+
 /**
  * Step 2: Generate the image based on the prompt (Image)
  * Uses gemini-3-pro-image-preview for high quality output.
+ * Supports optional reference image for multimodal generation.
  * Includes Retry Logic for stability.
  */
-export const generateCoverImage = async (prompt: string): Promise<string> => {
+export const generateCoverImage = async (prompt: string, referenceImage?: ReferenceImage): Promise<string> => {
   const ai = getClient();
   const maxRetries = 3;
   let lastError;
+
+  // Construct contents
+  const parts: any[] = [{ text: prompt }];
+  
+  // If reference image exists, add it to parts
+  if (referenceImage) {
+    parts.push({
+      inlineData: {
+        mimeType: referenceImage.mimeType,
+        data: referenceImage.data
+      }
+    });
+  }
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
       const response = await ai.models.generateContent({
         model: "gemini-3-pro-image-preview",
-        contents: {
-          parts: [{ text: prompt }]
-        },
+        contents: { parts },
         config: {
           imageConfig: {
             aspectRatio: "3:4", 
