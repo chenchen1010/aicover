@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { generateStrategies, generateCoverImage } from './services/geminiService';
-import { CoverResult, StrategyRecommendation, HistoryItem } from './types';
+import { CoverResult, StrategyRecommendation, HistoryItem, StoredImage } from './types';
 import ResultCard from './components/ResultCard';
 import { APP_NAME, APP_TAGLINE } from './constants';
 
@@ -17,10 +17,8 @@ const App: React.FC = () => {
   const [results, setResults] = useState<CoverResult[]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  // Reference Image State
-  const [refImagePreview, setRefImagePreview] = useState<string | null>(null);
-  const [refImageBase64, setRefImageBase64] = useState<string | null>(null); // Raw base64
-  const [refImageMimeType, setRefImageMimeType] = useState<string>('image/png');
+  // Reference Image State (Array)
+  const [refImages, setRefImages] = useState<StoredImage[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // History State
@@ -73,7 +71,6 @@ const App: React.FC = () => {
       setHistory(items);
     } catch (e) {
       console.error("Storage quota exceeded or error", e);
-      // Optional: Logic to remove oldest item if quota full, but for now just logging.
       setError("本地存储空间已满，部分历史记录可能未保存。");
     }
   };
@@ -82,8 +79,7 @@ const App: React.FC = () => {
     setCurrentId(null);
     setTopic('');
     setResults([]);
-    setRefImagePreview(null);
-    setRefImageBase64(null);
+    setRefImages([]);
     setError(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
     // On mobile, maybe close sidebar
@@ -95,13 +91,13 @@ const App: React.FC = () => {
     setTopic(item.topic);
     setResults(item.results);
     
-    if (item.referenceImage) {
-      setRefImagePreview(item.referenceImage.preview);
-      setRefImageBase64(item.referenceImage.base64);
-      setRefImageMimeType(item.referenceImage.mimeType);
+    // Handle migration from single image to multiple images
+    if (item.referenceImages) {
+      setRefImages(item.referenceImages);
+    } else if ((item as any).referenceImage) {
+      setRefImages([(item as any).referenceImage]);
     } else {
-      setRefImagePreview(null);
-      setRefImageBase64(null);
+      setRefImages([]);
     }
     
     setError(null);
@@ -131,32 +127,96 @@ const App: React.FC = () => {
   };
 
   // --- Image Handling ---
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      if (file.size > 4 * 1024 * 1024) { 
-        setError("图片大小不能超过 4MB");
-        return;
-      }
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        const result = reader.result as string;
-        setRefImagePreview(result);
-        const matches = result.match(/^data:(.+);base64,(.+)$/);
-        if (matches) {
-          setRefImageMimeType(matches[1]);
-          setRefImageBase64(matches[2]);
+  const processFiles = (files: File[]) => {
+    const validFiles = files.filter(f => f.type.startsWith('image/'));
+    
+    // Check sizes
+    for (const f of validFiles) {
+        if (f.size > 4 * 1024 * 1024) {
+            setError(`文件 ${f.name} 太大，不能超过 4MB`);
+            return;
         }
-        setError(null);
-      };
-      reader.readAsDataURL(file);
+    }
+
+    const promises = validFiles.map(file => {
+      return new Promise<StoredImage>((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const result = reader.result as string;
+          const matches = result.match(/^data:(.+);base64,(.+)$/);
+          if (matches) {
+            resolve({
+              preview: result,
+              mimeType: matches[1],
+              base64: matches[2]
+            });
+          } else {
+            // Fallback if regex fails (shouldn't usually happen with DataURL)
+            resolve({
+                preview: result,
+                mimeType: file.type,
+                base64: result.split(',')[1] || ''
+            });
+          }
+        };
+        reader.readAsDataURL(file);
+      });
+    });
+
+    Promise.all(promises).then(newImages => {
+      setRefImages(prev => [...prev, ...newImages]);
+      setError(null);
+    });
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      processFiles(Array.from(e.target.files));
     }
   };
 
-  const clearRefImage = () => {
-    setRefImagePreview(null);
-    setRefImageBase64(null);
-    if (fileInputRef.current) fileInputRef.current.value = '';
+  const handlePaste = (e: React.ClipboardEvent) => {
+    if (isProcessing) return;
+    const items = e.clipboardData.items;
+    const files: File[] = [];
+    for (const item of items) {
+      if (item.type.startsWith('image/')) {
+        const file = item.getAsFile();
+        if (file) files.push(file);
+      }
+    }
+    if (files.length > 0) {
+        e.preventDefault();
+        processFiles(files);
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (isProcessing) return;
+    
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      processFiles(Array.from(e.dataTransfer.files));
+    }
+  };
+
+  const triggerFileUpload = () => {
+    if (!isProcessing) {
+        fileInputRef.current?.click();
+    }
+  };
+
+  const removeRefImage = (index: number) => {
+    setRefImages(prev => prev.filter((_, i) => i !== index));
+    if (refImages.length <= 1 && fileInputRef.current) {
+        fileInputRef.current.value = '';
+    }
   };
 
   // --- Generation Logic ---
@@ -171,8 +231,8 @@ const App: React.FC = () => {
     setResults(newResults);
 
     try {
-      const refImageObj = refImageBase64 ? { data: refImageBase64, mimeType: refImageMimeType } : undefined;
-      const base64Image = await generateCoverImage(newPrompt, refImageObj);
+      const apiRefImages = refImages.map(img => ({ data: img.base64, mimeType: img.mimeType }));
+      const base64Image = await generateCoverImage(newPrompt, apiRefImages);
       
       const finishedResults = [...newResults];
       finishedResults[index] = { 
@@ -231,11 +291,7 @@ const App: React.FC = () => {
         topic: topic,
         timestamp: Date.now(),
         results: initialResults,
-        referenceImage: refImagePreview && refImageBase64 ? {
-          preview: refImagePreview,
-          base64: refImageBase64,
-          mimeType: refImageMimeType
-        } : null
+        referenceImages: refImages
       };
       // Prepend to history
       const updatedHistory = [newHistoryItem, ...history];
@@ -244,21 +300,17 @@ const App: React.FC = () => {
       setIsProcessing(false); 
 
       // 2. Parallel Image Generation
-      const refImageObj = refImageBase64 ? { data: refImageBase64, mimeType: refImageMimeType } : undefined;
+      const apiRefImages = refImages.map(img => ({ data: img.base64, mimeType: img.mimeType }));
 
       const imagePromises = initialResults.map(async (res, idx) => {
         try {
           const promptToUse = res.finalPrompt || res.gemini_image_prompt;
-          const base64Image = await generateCoverImage(promptToUse, refImageObj);
+          const base64Image = await generateCoverImage(promptToUse, apiRefImages);
           
           setResults(currentPrev => {
              const updated = currentPrev.map((item, i) => 
                i === idx ? { ...item, generatedImage: base64Image, isGeneratingImage: false } : item
              );
-             // Update history logic inside the promise chain is tricky due to closures, 
-             // but we can update the storage with the *latest* state after all settle, 
-             // or update incrementally. For simplicity, we just update local state here 
-             // and trigger a history update helper.
              return updated;
           });
         } catch (err: any) {
@@ -271,13 +323,7 @@ const App: React.FC = () => {
 
       await Promise.all(imagePromises);
       
-      // Final sync with history after images generated
-      // We need to access the latest 'results' state. 
-      // Since closures might capture stale state, we use a functional update pattern in setResults usually,
-      // but here we need to write to localStorage.
-      // A safe way is to just read the current state from the setter or use a ref, 
-      // but for this simple app, we can wait a tick or rely on an Effect.
-      // Let's manually reconstruct for storage to be safe.
+      // Final sync with history
       setResults(finalResults => {
         const finalHistory = updatedHistory.map(h => h.id === newSessionId ? { ...h, results: finalResults } : h);
         saveHistoryToStorage(finalHistory);
@@ -390,9 +436,7 @@ const App: React.FC = () => {
         <main className="flex-1 overflow-y-auto p-4 sm:p-8">
            <div className="max-w-4xl mx-auto">
              
-             {/* Input Section (Only show large if no results yet, otherwise compact or hidden?) 
-                 For simplicity, always keep it at top, but maybe cleaner. 
-             */}
+             {/* Input Section */}
              <section className={`mb-10 transition-all duration-500 ${results.length > 0 ? 'opacity-100' : 'min-h-[60vh] flex flex-col justify-center'}`}>
                 <div className="text-center mb-6">
                   {results.length === 0 && (
@@ -441,31 +485,57 @@ const App: React.FC = () => {
                     </button>
                   </div>
 
-                  <div className="flex flex-col items-center gap-2">
-                    {!refImagePreview ? (
-                      <div className="relative group w-full text-center">
+                  <div className="flex flex-col items-center gap-3">
+                    <div 
+                        className="relative group w-full text-center focus:outline-none rounded-xl"
+                        onPaste={handlePaste}
+                        onDragOver={handleDragOver}
+                        onDrop={handleDrop}
+                        tabIndex={0}
+                      >
                         <input 
                           type="file" 
+                          multiple
                           accept="image/*" 
                           onChange={handleFileChange}
                           ref={fileInputRef}
-                          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                          className="hidden"
                           disabled={isProcessing}
                         />
-                        <div className="inline-flex px-4 py-2 bg-white border border-dashed border-slate-300 rounded-lg text-slate-500 text-sm group-hover:border-red-400 group-hover:text-red-500 transition-colors items-center gap-2 cursor-pointer">
-                          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4">
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 15.75l5.159-5.159a2.25 2.25 0 013.182 0l5.159 5.159m-1.5-1.5l1.409-1.409a2.25 2.25 0 013.182 0l2.909 2.909m-18 3.75h16.5a1.5 1.5 0 001.5-1.5V6a1.5 1.5 0 00-1.5-1.5H3.75A1.5 1.5 0 002.25 6v12a1.5 1.5 0 001.5 1.5zm10.5-11.25h.008v.008h-.008V8.25zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0z" />
-                          </svg>
-                          上传参考图 (可选)
+                        <div className="flex flex-col items-center justify-center w-full px-4 py-8 bg-white border-2 border-dashed border-slate-200 rounded-xl group-hover:border-red-300 group-hover:bg-red-50/30 transition-all gap-4">
+                          <p className="text-slate-400 text-sm select-none cursor-default">
+                            参考图片粘贴或拖拽至这里上传
+                          </p>
+                          <button 
+                             type="button"
+                             onClick={triggerFileUpload}
+                             disabled={isProcessing}
+                             className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-lg text-slate-600 text-sm font-medium shadow-sm hover:text-red-500 hover:border-red-200 transition-colors disabled:opacity-50"
+                          >
+                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4">
+                               <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                             </svg>
+                             <span>添加本地文件</span>
+                          </button>
                         </div>
-                      </div>
-                    ) : (
-                      <div className="flex items-center gap-3 bg-white p-2 rounded-lg border border-slate-200 shadow-sm mt-2">
-                        <img src={refImagePreview} alt="Ref" className="w-10 h-10 object-cover rounded" />
-                        <span className="text-xs text-slate-500">已选参考图</span>
-                        <button type="button" onClick={clearRefImage} className="text-slate-400 hover:text-red-500">
-                          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
-                        </button>
+                    </div>
+
+                    {refImages.length > 0 && (
+                      <div className="w-full flex flex-wrap gap-2">
+                        {refImages.map((img, idx) => (
+                           <div key={idx} className="relative w-16 h-16 rounded-lg overflow-hidden border border-slate-200 group shadow-sm">
+                              <img src={img.preview} alt={`ref-${idx}`} className="w-full h-full object-cover" />
+                              <button
+                                type="button"
+                                onClick={() => removeRefImage(idx)}
+                                className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity text-white"
+                              >
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5">
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                              </button>
+                           </div>
+                        ))}
                       </div>
                     )}
                   </div>

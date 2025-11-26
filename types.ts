@@ -20,16 +20,19 @@ export interface CoverResult extends StrategyRecommendation {
   finalPrompt?: string; // The actual full prompt used for generation (editable)
 }
 
+export interface StoredImage {
+  preview: string;
+  base64: string;
+  mimeType: string;
+}
+
 export interface HistoryItem {
   id: string;
   topic: string;
   timestamp: number;
   results: CoverResult[];
-  referenceImage?: {
-    preview: string;
-    base64: string;
-    mimeType: string;
-  } | null;
+  // Support multiple images, keep referenceImage optional for backward compatibility if needed temporarily
+  referenceImages: StoredImage[]; 
 }
 
 // Global augmentation for AI Studio key selection

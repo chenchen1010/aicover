@@ -78,21 +78,23 @@ interface ReferenceImage {
  * Tries gemini-3-pro-image-preview first.
  * Fallbacks to gemini-2.5-flash-image if permission denied (403).
  */
-export const generateCoverImage = async (prompt: string, referenceImage?: ReferenceImage): Promise<string> => {
+export const generateCoverImage = async (prompt: string, referenceImages: ReferenceImage[] = []): Promise<string> => {
   const ai = getClient();
   const maxRetries = 2; // Reduced retries since we have a fallback
 
   // Construct contents
   const parts: any[] = [{ text: prompt }];
   
-  // If reference image exists, add it to parts
-  if (referenceImage) {
-    parts.push({
-      inlineData: {
-        mimeType: referenceImage.mimeType,
-        data: referenceImage.data
-      }
-    });
+  // If reference images exist, add them to parts
+  if (referenceImages && referenceImages.length > 0) {
+    for (const img of referenceImages) {
+      parts.push({
+        inlineData: {
+          mimeType: img.mimeType,
+          data: img.data
+        }
+      });
+    }
   }
 
   // Attempt 1: Try High Quality Model
