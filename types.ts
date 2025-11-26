@@ -20,6 +20,18 @@ export interface CoverResult extends StrategyRecommendation {
   finalPrompt?: string; // The actual full prompt used for generation (editable)
 }
 
+export interface HistoryItem {
+  id: string;
+  topic: string;
+  timestamp: number;
+  results: CoverResult[];
+  referenceImage?: {
+    preview: string;
+    base64: string;
+    mimeType: string;
+  } | null;
+}
+
 // Global augmentation for AI Studio key selection
 declare global {
   // The environment apparently already declares `window.aistudio` with type `AIStudio`.

@@ -75,14 +75,12 @@ interface ReferenceImage {
 
 /**
  * Step 2: Generate the image based on the prompt (Image)
- * Uses gemini-3-pro-image-preview for high quality output.
- * Supports optional reference image for multimodal generation.
- * Includes Retry Logic for stability.
+ * Tries gemini-3-pro-image-preview first.
+ * Fallbacks to gemini-2.5-flash-image if permission denied (403).
  */
 export const generateCoverImage = async (prompt: string, referenceImage?: ReferenceImage): Promise<string> => {
   const ai = getClient();
-  const maxRetries = 3;
-  let lastError;
+  const maxRetries = 2; // Reduced retries since we have a fallback
 
   // Construct contents
   const parts: any[] = [{ text: prompt }];
@@ -97,39 +95,53 @@ export const generateCoverImage = async (prompt: string, referenceImage?: Refere
     });
   }
 
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
-    try {
-      const response = await ai.models.generateContent({
-        model: "gemini-3-pro-image-preview",
+  // Attempt 1: Try High Quality Model
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-3-pro-image-preview",
+      contents: { parts },
+      config: {
+        imageConfig: {
+          aspectRatio: "3:4", 
+          imageSize: "1K" // Supported only in Pro
+        }
+      }
+    });
+    return extractImageFromResponse(response);
+  } catch (err: any) {
+    console.warn("Pro model failed, checking error type...", err);
+    
+    // Check if error is 403 Permission Denied or 404 Not Found (if model not available to user)
+    const isPermissionError = err.message?.includes("403") || err.message?.includes("PERMISSION_DENIED") || err.status === 403;
+    const isNotFoundError = err.message?.includes("404") || err.status === 404;
+
+    if (isPermissionError || isNotFoundError) {
+       console.log("Falling back to Flash model due to permissions/availability.");
+       // Fallback to Flash Model
+       // Note: Flash does not support 'imageSize'
+       const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash-image",
         contents: { parts },
         config: {
           imageConfig: {
-            aspectRatio: "3:4", 
-            imageSize: "1K"
+            aspectRatio: "3:4",
+            // No imageSize
           }
         }
       });
-
-      // Extract image
-      for (const part of response.candidates?.[0]?.content?.parts || []) {
-        if (part.inlineData) {
-          return part.inlineData.data;
-        }
-      }
-      
-      throw new Error("No image data found in response");
-
-    } catch (err: any) {
-      console.warn(`Image generation attempt ${attempt + 1} failed:`, err);
-      lastError = err;
-      
-      // If it's the last attempt, don't wait, just throw
-      if (attempt < maxRetries - 1) {
-        // Exponential backoff: 1s, 2s, 4s...
-        await wait(1000 * Math.pow(2, attempt));
-      }
+      return extractImageFromResponse(response);
+    } else {
+      // If it's another error (like server overload), verify if we should retry or throw
+      throw err;
     }
   }
+};
 
-  throw lastError || new Error("Image generation failed after retries");
+const extractImageFromResponse = (response: any): string => {
+  for (const part of response.candidates?.[0]?.content?.parts || []) {
+    if (part.inlineData) {
+      return part.inlineData.data;
+    }
+  }
+  throw new Error("No image data found in response");
 };
